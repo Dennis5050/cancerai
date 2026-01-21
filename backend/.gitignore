@@ -1,0 +1,15 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Python caching
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables (keeps your secrets safe)
+.env
+
+# Large model files (optional, if you use Git LFS)
+# model.pkl
