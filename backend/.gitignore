@@ -15,4 +15,4 @@ instance/
 .env
 
 # Large model files (optional, track once)
-# model.pkl
+ model.pkl
