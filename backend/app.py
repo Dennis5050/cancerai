@@ -3,9 +3,15 @@ from flask_cors import CORS
 import numpy as np
 import pickle
 import os
+import logging
 
+# ---------------- APP SETUP ----------------
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
+CORS(app, resources={r"/*": {"origins": "*"}})  # allow all origins for production
+
+# ---------------- SUPPRESS LOGS ----------------
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)  # only show errors
 
 # ---------------- LOAD AI MODEL ----------------
 MODEL_PATH = "model.pkl"
@@ -14,30 +20,22 @@ if not os.path.exists(MODEL_PATH):
 
 with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
-print("Model loaded successfully")
 
 # ---------------- PREDICTION ENDPOINT ----------------
 @app.route("/predict", methods=["POST"])
 def predict():
     data = request.get_json(silent=True) or {}
-    
     features = data.get("features")
-    
-    print("Received features from frontend:", features)
-    print("Type of features:", type(features))
-    print("Feature count:", len(features) if features else "None")
 
     # Validate features
     if not features or not isinstance(features, list) or len(features) != 30:
         return jsonify({"error": "Exactly 30 numeric features are required"}), 422
-    
+
     try:
         features_array = np.array([float(f) for f in features]).reshape(1, -1)
     except Exception as e:
-        print("Error converting features to float:", e)
         return jsonify({"error": "All features must be numeric"}), 422
 
-    # Make prediction
     try:
         prediction = model.predict(features_array)[0]
         probabilities = model.predict_proba(features_array)[0]
@@ -50,7 +48,6 @@ def predict():
         })
 
     except Exception as e:
-        print("Prediction failed:", e)
         return jsonify({
             "prediction": "Error",
             "confidence": "0%",
@@ -64,4 +61,5 @@ def home():
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Run quietly without debug logs
+    app.run(host="0.0.0.0", port=5000)
