@@ -8,8 +8,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Environment variables (keeps your secrets safe)
+# Flask instance folder
+instance/
+
+# Environment variables
 .env
 
-# Large model files (optional, if you use Git LFS)
+# Large model files (optional, track once)
 # model.pkl

@@ -3,55 +3,46 @@ from flask_cors import CORS
 import numpy as np
 import pickle
 import os
-import traceback
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})
 
+# ---------------- LOAD AI MODEL ----------------
 MODEL_PATH = "model.pkl"
-model = None
+if not os.path.exists(MODEL_PATH):
+    raise FileNotFoundError("model.pkl not found. Please generate it first with train_model.py")
 
-# Load model safely
-if os.path.exists(MODEL_PATH):
-    with open(MODEL_PATH, "rb") as f:
-        model = pickle.load(f)
-    print("Model loaded successfully.")
-else:
-    print("CRITICAL ERROR: model.pkl not found!")
+with open(MODEL_PATH, "rb") as f:
+    model = pickle.load(f)
+print("Model loaded successfully")
 
+# ---------------- PREDICTION ENDPOINT ----------------
 @app.route("/predict", methods=["POST"])
 def predict():
-    if model is None:
-        return jsonify({"error": "Model not loaded"}), 500
+    data = request.get_json(silent=True) or {}
+    
+    features = data.get("features")
+    
+    print("Received features from frontend:", features)
+    print("Type of features:", type(features))
+    print("Feature count:", len(features) if features else "None")
 
+    # Validate features
+    if not features or not isinstance(features, list) or len(features) != 30:
+        return jsonify({"error": "Exactly 30 numeric features are required"}), 422
+    
     try:
-        # Ensure request is JSON
-        if not request.is_json:
-            return jsonify({"error": "Request must be JSON"}), 400
+        features_array = np.array([float(f) for f in features]).reshape(1, -1)
+    except Exception as e:
+        print("Error converting features to float:", e)
+        return jsonify({"error": "All features must be numeric"}), 422
 
-        data = request.get_json()
-
-        # Validate 'features' key exists
-        if "features" not in data:
-            return jsonify({"error": "'features' key missing in request"}), 400
-
-        features = np.array(data["features"])
-
-        # Check if features have correct shape for the model
-        if features.ndim == 1:
-            features = features.reshape(1, -1)
-        elif features.ndim != 2:
-            return jsonify({"error": "Features must be a 1D or 2D array"}), 400
-
-        # Prediction
-        prediction = model.predict(features)[0]
-
-        # Confidence
-        probabilities = model.predict_proba(features)[0]
+    # Make prediction
+    try:
+        prediction = model.predict(features_array)[0]
+        probabilities = model.predict_proba(features_array)[0]
         confidence = round(float(np.max(probabilities)) * 100, 2)
-
-        # Map prediction to human-readable label
-        result = "Malignant" if prediction == 0 else "Benign"
+        result = "Benign" if prediction == 1 else "Malignant"
 
         return jsonify({
             "prediction": result,
@@ -59,13 +50,18 @@ def predict():
         })
 
     except Exception as e:
-        print("Error in /predict:")
-        traceback.print_exc()  # Full error printed to console
-        return jsonify({"error": str(e)}), 500
+        print("Prediction failed:", e)
+        return jsonify({
+            "prediction": "Error",
+            "confidence": "0%",
+            "error": f"Prediction failed: {str(e)}"
+        }), 500
 
+# ---------------- HOME ----------------
 @app.route("/")
 def home():
-    return "Breast Cancer Prediction API is running"
+    return "Hospital AI System Running"
 
+# ---------------- MAIN ----------------
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    app.run(debug=True)
