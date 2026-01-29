@@ -1,6 +1,7 @@
-import { useState } from "react";
-import { Activity, Beaker, ClipboardList } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Activity, Beaker, ClipboardList, User, Info } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import api from "../services/api";
 
 export default function Diagnosis() {
   const navigate = useNavigate();
@@ -9,6 +10,9 @@ export default function Diagnosis() {
   const [result, setResult] = useState(null);
   const [selectedSample, setSelectedSample] = useState("");
   const [error, setError] = useState("");
+  const [doctor, setDoctor] = useState(null);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef();
 
   const labels = [
     "Mean Radius","Mean Texture","Mean Perimeter","Mean Area","Mean Smoothness",
@@ -58,162 +62,174 @@ export default function Diagnosis() {
     }
 
     const numericFeatures = features.map(Number);
-    const invalid = numericFeatures.some(f => isNaN(f));
+    const invalidIndexes = numericFeatures
+      .map((f, i) => (isNaN(f) ? i : null))
+      .filter((i) => i !== null);
 
-    if (invalid || numericFeatures.length !== 30) {
-      setError("⚠️ All 30 diagnostic features must be valid numbers.");
+    if (invalidIndexes.length > 0) {
+      setError("⚠️ All diagnostic fields must contain valid numeric values.");
       return;
     }
 
     setLoading(true);
-
     try {
-      const response = await fetch("https://cancerai.onrender.com/predict", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer " + token
-        },
-        body: JSON.stringify({ features: numericFeatures })
+      const { data } = await api.post("/predict", { features: numericFeatures });
+
+      setResult({
+        prediction: data.prediction,
+        confidence: Math.round(data.confidence * 100),
+        riskLevel: data.risk_level,
+        explanation: data.clinical_explanation,
+        message: data.message,
       });
 
-      if (response.status === 401) {
-        navigate("/login");
-        return;
+    } catch (err) {
+      if (err.response?.status === 401) navigate("/login");
+      else {
+        setResult({
+          prediction: "Error",
+          confidence: "--",
+          riskLevel: "Unknown",
+          explanation: "Unable to reach AI service.",
+          message: "System error occurred."
+        });
       }
-
-      const data = await response.json();
-
-      setResult({
-        status: data.prediction,
-        confidence: data.confidence,
-        recommendation:
-          data.prediction === "Benign"
-            ? "Routine follow-up recommended in 6 months."
-            : "Immediate oncologist consultation advised."
-      });
-
-    } catch {
-      setResult({
-        status: "Error",
-        confidence: "--",
-        recommendation: "Unable to connect to AI server."
-      });
     }
-
     setLoading(false);
   };
 
+  const allFieldsFilled = features.every(f => f !== "" && !isNaN(f));
+
+  // ---------------- Fetch doctor info ----------------
+  useEffect(() => {
+    const fetchDoctor = async () => {
+      try {
+        const { data } = await api.get("/doctor/me");
+        setDoctor(data);
+      } catch {
+        localStorage.removeItem("token");
+        navigate("/login");
+      }
+    };
+    fetchDoctor();
+  }, [navigate]);
+
+  // ---------------- Close dropdown ----------------
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    navigate("/login");
+  };
+
   return (
-    <div className="bg-slate-50 text-slate-900 font-sans">
+    <div className="bg-slate-50 min-h-screen">
 
       {/* HEADER */}
       <header className="bg-white border-b">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-3">
-          <Activity className="text-blue-600" />
-          <h1 className="text-xl font-bold">CancerAI — Breast Cancer Prediction System</h1>
+        <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <Activity className="text-blue-600" />
+            <h1 className="text-xl font-bold">CancerAI — Clinical Decision Support</h1>
+          </div>
+
+          {doctor && (
+            <div className="relative" ref={dropdownRef}>
+              <button onClick={() => setDropdownOpen(!dropdownOpen)}
+                className="bg-gray-200 p-2 rounded-full">
+                <User />
+              </button>
+
+              {dropdownOpen && (
+                <div className="absolute right-0 mt-2 bg-white border rounded-lg shadow p-4 w-64">
+                  <p className="font-semibold">{doctor.full_name}</p>
+                  <p className="text-sm">{doctor.email}</p>
+                  <p className="text-sm">License: {doctor.license_number}</p>
+                  <button onClick={handleLogout}
+                    className="mt-3 w-full bg-red-600 text-white py-1 rounded">
+                    Logout
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </header>
 
-      {/* HERO */}
-      <section className="bg-blue-50 py-20 text-center">
-        <h2 className="text-4xl font-black mb-4">AI-Powered Clinical Decision Support</h2>
-        <p className="max-w-3xl mx-auto text-slate-600">
-          This system assists medical professionals in early breast cancer detection using
-          machine learning trained on clinically validated diagnostic datasets.
-        </p>
-      </section>
-
-      {/* ABOUT */}
-      <section className="max-w-7xl mx-auto px-6 py-16">
-        <h3 className="text-2xl font-bold mb-4">About the System</h3>
-        <p className="text-slate-600 max-w-4xl">
-          CancerAI analyzes digitized biopsy features using a Random Forest classifier to
-          predict whether a tumor is malignant or benign. It is designed strictly as a
-          clinical decision support tool.
-        </p>
-      </section>
-
-      {/* ADVANTAGES */}
-      <section className="bg-white py-16">
-        <div className="max-w-7xl mx-auto px-6">
-          <h3 className="text-2xl font-bold mb-6">Advantages</h3>
-          <ul className="grid md:grid-cols-3 gap-6 text-slate-600">
-            <li>✔ Fast and accurate AI inference</li>
-            <li>✔ Supports clinical decision making</li>
-            <li>✔ Secure doctor-only access</li>
-            <li>✔ Reduces diagnostic subjectivity</li>
-            <li>✔ Built on real medical datasets</li>
-            <li>✔ Designed for hospital environments</li>
-          </ul>
-        </div>
-      </section>
-
-      {/* DIAGNOSIS FORM */}
-      <section className="max-w-7xl mx-auto px-6 py-16">
-        <h3 className="text-2xl font-bold mb-4 flex items-center gap-2">
-          <ClipboardList className="text-blue-600" />
-          Diagnostic Input
+      {/* FORM */}
+      <section className="max-w-7xl mx-auto px-6 py-12">
+        <h3 className="text-2xl font-bold mb-6 flex gap-2">
+          <ClipboardList /> Diagnostic Input
         </h3>
 
-        <select
-          value={selectedSample}
-          onChange={handleSampleSelect}
-          className="mb-6 w-full md:w-96 p-2 border rounded"
-        >
+        <select value={selectedSample} onChange={handleSampleSelect}
+          className="mb-6 w-full md:w-96 p-2 border rounded">
           <option value="">-- Load Sample Patient --</option>
           {Object.keys(samplePatients).map(k => (
-            <option key={k} value={k}>{k}</option>
+            <option key={k}>{k}</option>
           ))}
         </select>
 
         <div className="grid md:grid-cols-2 gap-4">
           {labels.map((label, i) => (
             <div key={i}>
-              <label className="block text-xs font-semibold text-slate-500 mb-1">
-                {label}
-              </label>
+              <label className="text-xs font-semibold">{label}</label>
               <input
                 type="number"
-                className="w-full border rounded px-3 py-2"
                 value={features[i]}
                 onChange={(e) => handleChange(i, e.target.value)}
+                className="w-full border rounded px-3 py-2"
               />
             </div>
           ))}
         </div>
 
         {error && (
-          <div className="mt-6 bg-red-50 border border-red-200 text-red-700 p-4 rounded">
-            {error}
-          </div>
+          <div className="mt-6 bg-red-50 border p-4 rounded">{error}</div>
         )}
 
         <button
           onClick={runPrediction}
-          disabled={loading}
-          className="mt-8 bg-slate-900 text-white px-8 py-3 rounded-lg font-semibold flex items-center gap-2"
+          disabled={loading || !allFieldsFilled}
+          className="mt-8 bg-slate-900 text-white px-8 py-3 rounded-lg flex gap-2"
         >
-          <Beaker size={18} />
+          <Beaker />
           {loading ? "Analyzing..." : "Run Diagnosis"}
         </button>
 
+        {/* RESULTS + EXPLAINABILITY */}
         {result && (
-          <div className="mt-10 bg-blue-50 border border-blue-200 rounded-xl p-6 text-center">
-            <h4 className={`text-3xl font-black ${result.status === "Malignant" ? "text-red-600" : "text-green-600"}`}>
-              {result.status}
+          <div className="mt-10 bg-white border rounded-xl p-6">
+            <h4 className={`text-3xl font-black ${
+              result.prediction === "Malignant" ? "text-red-600" : "text-green-600"
+            }`}>
+              {result.prediction}
             </h4>
-            <p className="mt-2">Confidence: <strong>{result.confidence}</strong></p>
-            <p className="mt-3 text-slate-600">{result.recommendation}</p>
+
+            <p className="mt-2">Confidence: <strong>{result.confidence}%</strong></p>
+            <p className="mt-2">Risk Level: <strong>{result.riskLevel}</strong></p>
+
+            <div className="mt-4 bg-blue-50 border p-4 rounded flex gap-2">
+              <Info className="text-blue-600" />
+              <p className="text-sm">{result.explanation}</p>
+            </div>
+
+            <p className="mt-4 font-semibold">{result.message}</p>
           </div>
         )}
       </section>
 
-      {/* FOOTER */}
-      <footer className="bg-slate-900 text-slate-300 text-sm py-6 text-center">
-        © {new Date().getFullYear()} CancerAI — Kirinyaga University | Final Year Project
+      <footer className="bg-slate-900 text-slate-300 text-center py-6">
+        © {new Date().getFullYear()} CancerAI — Final Year Project
       </footer>
-
     </div>
   );
 }

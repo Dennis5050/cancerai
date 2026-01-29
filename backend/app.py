@@ -1,65 +1,248 @@
+# app.py
+import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import numpy as np
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+import jwt
+import datetime
+from functools import wraps
 import pickle
-import os
-import logging
+import numpy as np
+from dotenv import load_dotenv
 
-# ---------------- APP SETUP ----------------
+# -------------------------
+# Load environment variables
+# -------------------------
+load_dotenv()
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey12345")
+JWT_EXP_DELTA_SECONDS = int(os.getenv("JWT_EXP_DELTA_SECONDS", 3600))
+
+# -------------------------
+# Flask app
+# -------------------------
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})  # allow all origins for production
+CORS(
+    app,
+    resources={r"/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}},
+    supports_credentials=True,
+    allow_headers=["Content-Type", "Authorization"],
+    methods=["GET", "POST", "OPTIONS"],
+)
 
-# ---------------- SUPPRESS LOGS ----------------
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)  # only show errors
+app.config["SECRET_KEY"] = SECRET_KEY
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///doctors.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# ---------------- LOAD AI MODEL ----------------
-MODEL_PATH = "model.pkl"
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError("model.pkl not found. Please generate it first with train_model.py")
+db = SQLAlchemy(app)
 
-with open(MODEL_PATH, "rb") as f:
-    model = pickle.load(f)
+# -------------------------
+# Doctor model
+# -------------------------
+class Doctor(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    full_name = db.Column(db.String(100))
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    license_number = db.Column(db.String(50))
+    password = db.Column(db.String(200), nullable=False)
 
-# ---------------- PREDICTION ENDPOINT ----------------
+# -------------------------
+# Load ML model
+# -------------------------
+try:
+    with open("model.pkl", "rb") as f:
+        model = pickle.load(f)
+    print("✅ Model loaded successfully")
+except Exception as e:
+    print("❌ Failed to load model:", e)
+    model = None
+
+# -------------------------
+# JWT token decorator
+# -------------------------
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        if "Authorization" in request.headers:
+            bearer = request.headers["Authorization"]
+            if bearer.startswith("Bearer "):
+                token = bearer[7:]
+
+        if not token:
+            return jsonify({"message": "Token is missing"}), 401
+
+        try:
+            payload = jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
+            current_user = Doctor.query.filter_by(email=payload["email"]).first()
+            if not current_user:
+                raise Exception("User not found")
+        except Exception:
+            return jsonify({"message": "Token is invalid or expired"}), 401
+
+        return f(current_user, *args, **kwargs)
+
+    return decorated
+
+# -------------------------
+# Auth routes
+# -------------------------
+@app.route("/auth/register", methods=["POST"])
+def register():
+    data = request.json
+    email = data.get("email")
+    password = data.get("password")
+    full_name = data.get("full_name")
+    license_number = data.get("license_number")
+
+    if not email or not password:
+        return jsonify({"message": "Email and password required"}), 400
+
+    if Doctor.query.filter_by(email=email).first():
+        return jsonify({"message": "Email already registered"}), 400
+
+    hashed_password = generate_password_hash(password)
+    new_doctor = Doctor(
+        full_name=full_name,
+        email=email,
+        license_number=license_number,
+        password=hashed_password,
+    )
+    db.session.add(new_doctor)
+    db.session.commit()
+
+    return jsonify({"message": "Registration successful"}), 201
+
+
+@app.route("/auth/login", methods=["POST"])
+def login():
+    data = request.json
+    email = data.get("email")
+    password = data.get("password")
+
+    doctor = Doctor.query.filter_by(email=email).first()
+    if not doctor or not check_password_hash(doctor.password, password):
+        return jsonify({"message": "Invalid credentials"}), 401
+
+    payload = {
+        "email": doctor.email,
+        "exp": datetime.datetime.utcnow()
+        + datetime.timedelta(seconds=JWT_EXP_DELTA_SECONDS),
+    }
+    token = jwt.encode(payload, app.config["SECRET_KEY"], algorithm="HS256")
+    return jsonify({"access_token": token})
+
+
+# -------------------------
+# Get current doctor info
+# -------------------------
+@app.route("/doctor/me", methods=["GET"])
+@token_required
+def get_doctor(current_user):
+    return jsonify(
+        {
+            "full_name": current_user.full_name,
+            "email": current_user.email,
+            "license_number": current_user.license_number,
+        }
+    )
+
+
+# -------------------------
+# Prediction route (WITH EXPLAINABILITY)
+# -------------------------
 @app.route("/predict", methods=["POST"])
-def predict():
-    data = request.get_json(silent=True) or {}
+@token_required
+def predict(current_user):
+    if model is None:
+        return (
+            jsonify(
+                {
+                    "prediction": "Error",
+                    "confidence": 0.0,
+                    "message": "Model not loaded",
+                }
+            ),
+            500,
+        )
+
+    data = request.json
     features = data.get("features")
 
-    # Validate features
-    if not features or not isinstance(features, list) or len(features) != 30:
-        return jsonify({"error": "Exactly 30 numeric features are required"}), 422
+    if not features or len(features) != 30:
+        return jsonify({"message": "Exactly 30 features required"}), 400
 
     try:
-        features_array = np.array([float(f) for f in features]).reshape(1, -1)
-    except Exception as e:
-        return jsonify({"error": "All features must be numeric"}), 422
+        features = np.array(features, dtype=float).reshape(1, -1)
+    except ValueError:
+        return jsonify({"message": "All features must be numeric"}), 400
 
     try:
-        prediction = model.predict(features_array)[0]
-        probabilities = model.predict_proba(features_array)[0]
-        confidence = round(float(np.max(probabilities)) * 100, 2)
-        result = "Benign" if prediction == 1 else "Malignant"
-
-        return jsonify({
-            "prediction": result,
-            "confidence": f"{confidence}%"
-        })
-
+        pred_numeric = int(model.predict(features)[0])
+        confidence = (
+            float(np.max(model.predict_proba(features)))
+            if hasattr(model, "predict_proba")
+            else 0.9
+        )
     except Exception as e:
-        return jsonify({
-            "prediction": "Error",
-            "confidence": "0%",
-            "error": f"Prediction failed: {str(e)}"
-        }), 500
+        return (
+            jsonify(
+                {
+                    "prediction": "Error",
+                    "confidence": 0.0,
+                    "message": f"Prediction failed: {e}",
+                }
+            ),
+            500,
+        )
 
-# ---------------- HOME ----------------
-@app.route("/")
-def home():
-    return "Hospital AI System Running"
+    # -------------------------
+    # Explainability logic
+    # -------------------------
+    prediction = "Malignant" if pred_numeric == 0 else "Benign"
 
-# ---------------- MAIN ----------------
+    if pred_numeric == 0:
+        risk_level = "High risk"
+        clinical_explanation = (
+            "The model detected feature patterns commonly associated with malignant tumors, "
+            "including irregular cell structure and abnormal texture measurements."
+        )
+        message = "Immediate oncologist consultation advised."
+
+    elif pred_numeric == 1 and confidence < 0.7:
+        risk_level = "Intermediate risk"
+        clinical_explanation = (
+            "The model predicts a benign outcome, but confidence is below the clinical safety threshold. "
+            "Some feature values overlap with malignant patterns."
+        )
+        message = (
+            "Low confidence benign result. Follow-up imaging or clinical review recommended."
+        )
+
+    else:
+        risk_level = "Low risk"
+        clinical_explanation = (
+            "The input features closely match patterns seen in benign breast tissue, "
+            "with smooth cell boundaries and consistent texture measurements."
+        )
+        message = "Low risk detected. Routine monitoring recommended."
+
+    return jsonify(
+        {
+            "prediction": prediction,
+            "confidence": round(confidence, 2),
+            "risk_level": risk_level,
+            "clinical_explanation": clinical_explanation,
+            "message": message,
+        }
+    )
+
+
+# -------------------------
+# Initialize DB and run server
+# -------------------------
+with app.app_context():
+    db.create_all()
+
 if __name__ == "__main__":
-    # Run quietly without debug logs
-    app.run(host="0.0.0.0", port=5000)
+    app.run(debug=True)
