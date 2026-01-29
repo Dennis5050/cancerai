@@ -1,4 +1,4 @@
-const API_URL = "http://127.0.0.1:5000/auth"; // your backend auth base URL
+const API_URL = process.env.REACT_APP_API_URL + "/auth"; // your backend auth base URL
 
 // ---------------------- Login ----------------------
 export const loginDoctor = async ({ email, password }) => {
