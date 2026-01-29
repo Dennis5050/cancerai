@@ -1,4 +1,8 @@
-const API_URL = process.env.REACT_APP_API_URL + "/auth"; // your backend auth base URL
+ // your backend auth base URL
+
+const API_URL = import.meta.env.VITE_API_URL + "/auth";
+
+
 
 // ---------------------- Login ----------------------
 export const loginDoctor = async ({ email, password }) => {
